@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep MSBuild output out of the package: folders whose name starts with '.'
+         are ignored by Unity's asset importer, so build artifacts never become
+         plugin assets in a consumer project. -->
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory).build/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory).build/bin/</BaseOutputPath>
+  </PropertyGroup>
+</Project>

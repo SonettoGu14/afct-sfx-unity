@@ -15,3 +15,5 @@ Tools/node_modules/
 Tools/**/bin/
 Tools/**/obj/
 *.meta.tmp
+.artifacts/
+Tools/**/.build/

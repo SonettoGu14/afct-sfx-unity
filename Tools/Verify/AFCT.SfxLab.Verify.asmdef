@@ -1,0 +1,16 @@
+{
+    "name": "AFCT.SfxLab.Verify",
+    "rootNamespace": "AFCT.SfxLab.Verify",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "AFCT_SFXLAB_VERIFY_HARNESS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": true
+}
