@@ -113,6 +113,17 @@ namespace AFCT.SfxLab.Tests
             Assert.AreEqual("Cinematic", SfxPresets.Category(SfxPresetId.Whoosh));
             Assert.AreEqual("Footsteps", SfxPresets.Category(SfxPresetId.FootstepSnow));
             Assert.AreEqual("Utility", SfxPresets.Category(SfxPresetId.Random));
+
+            Assert.AreEqual(SfxPresets.Order.Length, SfxPresets.All.Length);
+            for (int index = 0; index < SfxPresets.Order.Length; index += 1)
+            {
+                SfxPresetId preset = SfxPresets.Order[index];
+                SfxPresetInfo info = SfxPresets.All[index];
+                Assert.AreEqual(preset, info.Preset);
+                Assert.AreEqual(SfxPresets.DisplayName(preset), info.DisplayName);
+                Assert.AreEqual(SfxPresets.Category(preset), info.Category);
+                Assert.AreEqual(info.DisplayName, SfxPresets.Info(preset).DisplayName);
+            }
         }
 
         [Test]

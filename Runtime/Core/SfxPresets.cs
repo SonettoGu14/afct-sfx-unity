@@ -41,6 +41,26 @@ namespace AFCT.SfxLab
             SfxPresetId.FootstepWater,
         };
 
+        /// <summary>Display metadata for every preset, in <see cref="Order"/>.</summary>
+        public static readonly SfxPresetInfo[] All = BuildAll();
+
+        /// <summary>Display metadata for one preset.</summary>
+        public static SfxPresetInfo Info(SfxPresetId preset)
+        {
+            return new SfxPresetInfo(preset, DisplayName(preset), Category(preset));
+        }
+
+        private static SfxPresetInfo[] BuildAll()
+        {
+            var infos = new SfxPresetInfo[Order.Length];
+            for (int index = 0; index < Order.Length; index += 1)
+            {
+                infos[index] = Info(Order[index]);
+            }
+
+            return infos;
+        }
+
         /// <summary>Human readable preset name.</summary>
         public static string DisplayName(SfxPresetId preset)
         {
