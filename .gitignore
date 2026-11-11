@@ -1,0 +1,17 @@
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+*.csproj
+*.sln
+*.user
+.DS_Store
+.idea/
+TestResults/
+Tools/node_modules/
+Tools/**/bin/
+Tools/**/obj/
+*.meta.tmp

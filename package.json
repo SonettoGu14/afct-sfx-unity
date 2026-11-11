@@ -1,0 +1,23 @@
+{
+  "name": "com.afct.sfxlab",
+  "version": "0.1.0",
+  "displayName": "AFCT SFX Lab",
+  "description": "Generate retro and cinematic game sound effects inside the Unity Editor. 28 presets, a parameter synth with an FX rack, and one-click WAV export into the project.",
+  "unity": "2022.3",
+  "license": "GPL-3.0-only",
+  "author": {
+    "name": "SonettoGu14",
+    "url": "https://github.com/SonettoGu14"
+  },
+  "keywords": [
+    "audio",
+    "sfx",
+    "sound-effect",
+    "generator",
+    "editor"
+  ],
+  "dependencies": {},
+  "documentationUrl": "https://github.com/SonettoGu14/afct-sfx-unity#readme",
+  "changelogUrl": "https://github.com/SonettoGu14/afct-sfx-unity/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/SonettoGu14/afct-sfx-unity/blob/main/LICENSE"
+}
