@@ -178,7 +178,10 @@ web repo's dependencies installed.
 
 ## Cross-project protocol
 
-The web repository is the reference implementation:
+The web repository is the reference implementation. Its own handoff notes live at
+`~/GitHubProjects/game-sfx-generator-web/AGENTS.md` (and
+https://github.com/SonettoGu14/afct-sfx-lab/blob/main/AGENTS.md); read them before touching
+engine semantics, preset recipes or fixture generation.
 
 1. Engine or preset changes start in `~/GitHubProjects/game-sfx-generator-web/src/lib/**` with
    tests.
