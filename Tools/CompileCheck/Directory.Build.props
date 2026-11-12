@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <!-- Restore and build output must stay outside the package: Unity imports
+         everything under a local package folder, and stray Unity DLLs there
+         would inject duplicate assembly references into the consuming project. -->
+    <MSBuildProjectExtensionsPath>$(MSBuildThisFileDirectory)../../.artifacts/compilecheck/obj/</MSBuildProjectExtensionsPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../.artifacts/compilecheck/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../.artifacts/compilecheck/bin/</BaseOutputPath>
+    <!-- Offline friendly: no vulnerability feed lookups during restore. -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>

@@ -1,30 +1,32 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
-using AFCT.SfxLab;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
-using Object = UnityEngine.Object;
 
 namespace AFCT.SfxLab.EditorTools
 {
     /// <summary>
-    /// The AFCT SFX Lab production sheet: preset rail, parameter column and a dark monitor band.
-    /// Everything is built in code on top of a static UXML skeleton so the window survives
-    /// domain reloads with plain elements only.
+    /// Native editor window for the SFX Lab. The layout follows the Project window plus
+    /// Inspector idiom so the tool feels like part of Unity rather than a web page.
     /// </summary>
     internal sealed class SfxLabWindow : EditorWindow
     {
-        private const string UxmlPath = "Editor/UI/SfxLabWindow.uxml";
-        private const string UssPath = "Editor/UI/SfxLabWindow.uss";
-        private const int RenderDelayMs = 60;
+        private const string PrefsKey = "afct-sfx-lab.window";
+        private const float RenderDebounceSeconds = 0.06f;
+        private const float MinLeftWidth = 180f;
+        private const float MaxLeftWidth = 360f;
+        private const float MinRightWidth = 360f;
+        private const float SplitterWidth = 6f;
+        private const float MinWindowWidth = 760f;
+        private const float MinWindowHeight = 560f;
 
-        private static readonly int[] SampleRates = { 44100, 48000, 22050, 11025, 8000 };
+        // Menu order is high to low; 44.1 kHz stays the default selection.
+        private static readonly int[] SampleRates = { 48000, 44100, 22050, 11025, 8000 };
+        private const int DefaultSampleRate = 44100;
 
         private static readonly string[] SampleRateLabels =
         {
-            "44.1 kHz", "48 kHz", "22.05 kHz", "11.025 kHz", "8 kHz"
+            "48 kHz", "44.1 kHz", "22.05 kHz", "11.025 kHz", "8 kHz"
         };
 
         private static readonly string[] PeakLabels = { "Off", "-3 dBFS", "-6 dBFS", "-12 dBFS" };
@@ -34,747 +36,706 @@ namespace AFCT.SfxLab.EditorTools
             double.NegativeInfinity, -3d, -6d, -12d
         };
 
-        private static readonly string[] RailCategories =
+        private static readonly string[] RailCategories = { "UI", "Action", "Cinematic", "Footsteps", "Utility" };
+
+        private static readonly SfxWaveform[] Waveforms =
         {
-            "UI", "Action", "Cinematic", "Footsteps", "Utility"
+            SfxWaveform.Square, SfxWaveform.Sawtooth, SfxWaveform.Sine, SfxWaveform.Noise
         };
 
-        private readonly AudioPreview _preview = new AudioPreview();
-        private readonly Dictionary<SfxPresetId, VisualElement> _cueRows =
-            new Dictionary<SfxPresetId, VisualElement>();
+        private static readonly string[] WaveformLabels = { "Square", "Sawtooth", "Sine", "Noise" };
 
-        private SfxPresetId _activePreset = SfxPresetId.Click;
+        private static readonly SfxFootstepTerrain[] Terrains =
+        {
+            SfxFootstepTerrain.Snow, SfxFootstepTerrain.Grass, SfxFootstepTerrain.Dirt,
+            SfxFootstepTerrain.Gravel, SfxFootstepTerrain.Mud, SfxFootstepTerrain.Wood,
+            SfxFootstepTerrain.Metal, SfxFootstepTerrain.Water
+        };
+
+        private static readonly string[] TerrainLabels =
+        {
+            "Snow", "Grass", "Dirt", "Gravel", "Mud", "Wood", "Metal", "Water"
+        };
+
+        private static readonly string[] PresetLabels;
+        private static readonly string[] PresetCategories;
+        private static readonly GroupSpec[] Groups = BuildGroups();
+
+        static SfxLabWindow()
+        {
+            SfxPresetId[] order = SfxPresets.Order;
+            PresetLabels = new string[order.Length];
+            PresetCategories = new string[order.Length];
+            for (int i = 0; i < order.Length; i++)
+            {
+                PresetLabels[i] = SfxPresets.DisplayName(order[i]);
+                PresetCategories[i] = SfxPresets.Category(order[i]);
+            }
+        }
+
+        [SerializeField] private SfxPresetId _activePreset = SfxPresetId.Click;
+        [SerializeField] private int _sampleRate = DefaultSampleRate;
+        [SerializeField] private string _exportName = string.Empty;
+
         private SfxParams _params;
         private float[] _samples;
         private SfxRenderStats _stats;
-        private int _sampleRate = SampleRates[0];
-        private Font _monoFont;
-
-        private bool _built;
-        private bool _dirty;
-        private bool _rendering;
-        private bool _playbackActive;
-
-        private IVisualElementScheduledItem _renderItem;
-        private IVisualElementScheduledItem _watchItem;
+        private AudioPreview _preview;
         private AudioClip _previewClip;
+        private bool _playbackActive;
+        private bool _rendering;
+        private bool _dirty = true;
+        private double _renderDue;
+        private string _status = "Ready.";
+        private MessageType _statusType = MessageType.Info;
+        private string _search = string.Empty;
+        private float _leftWidth = 228f;
+        private bool _splitterDrag;
+        private Vector2 _railScroll;
+        private Vector2 _inspectorScroll;
+        private readonly bool[] _categoryOpen = { true, true, true, true, true };
+        private bool[] _groupOpen;
+        private float[] _waveMin;
+        private float[] _waveMax;
+        private int _waveWidth = -1;
+        private bool _waveDirty = true;
+        private bool _trimSilence;
+        private PeakTarget _peakTarget = PeakTarget.Off;
 
-        private Label _exportFolder;
-        private ScrollView _railScroll;
-        private VisualElement _rail;
-        private ScrollView _paramScroll;
-        private Label _presetName;
-        private Label _presetLine;
-        private VisualElement _paramGroups;
-        private Label _monitorMeta;
-        private VisualElement _waveformSlot;
-        private WaveformView _waveform;
-        private Label _readoutDuration;
-        private Label _readoutSamples;
-        private Label _readoutPeak;
-        private Label _readoutClipped;
-        private Button _playButton;
-        private Button _stopButton;
-        private Button _exportButton;
-        private Label _status;
-        private TextField _fileNameField;
-        private PaperSelect _sampleRateSelect;
-        private PaperSelect _peakSelect;
-        private PaperCheck _trimCheck;
-
-        private void CreateGUI()
+        private enum PeakTarget
         {
-            rootVisualElement.Clear();
-            rootVisualElement.AddToClassList("sfxlab-root");
-            minSize = new Vector2(900f, 600f);
+            Off = 0,
+            Minus3 = 1,
+            Minus6 = 2,
+            Minus12 = 3
+        }
+
+        private void OnEnable()
+        {
             titleContent = new GUIContent("AFCT SFX Lab");
+            minSize = new Vector2(MinWindowWidth, MinWindowHeight);
+            wantsMouseMove = true;
+            _preview = new AudioPreview();
 
-            _renderItem = null;
-            _watchItem = null;
-            _built = false;
-            StopPreview();
-
-            VisualTreeAsset uxml = LoadAsset<VisualTreeAsset>(UxmlPath);
-            if (uxml == null)
+            if (Array.IndexOf(SampleRates, _sampleRate) < 0)
             {
-                rootVisualElement.Add(new Label("AFCT SFX Lab could not find " + UxmlPath + "."));
-                return;
+                _sampleRate = DefaultSampleRate;
             }
 
-            StyleSheet uss = LoadAsset<StyleSheet>(UssPath);
-            if (uss != null && !rootVisualElement.styleSheets.Contains(uss))
+            if (_groupOpen == null || _groupOpen.Length != Groups.Length)
             {
-                rootVisualElement.styleSheets.Add(uss);
+                _groupOpen = new bool[Groups.Length];
+                for (int i = 0; i < Groups.Length; i++)
+                {
+                    _groupOpen[i] = Groups[i].ExpandedByDefault;
+                }
             }
 
-            var host = new VisualElement { name = "sfxlab-host" };
-            host.style.flexGrow = 1f;
-            rootVisualElement.Add(host);
-            uxml.CloneTree(host);
+            if (_params == null)
+            {
+                _params = LoadSavedParams();
+                if (_params == null)
+                {
+                    _params = SfxPresets.Create(_activePreset);
+                }
+            }
 
-            _monoFont = LoadMonoFont();
-            CacheElements();
-            ApplyMonoFonts();
-            BindControls();
-            BuildRail();
+            if (string.IsNullOrEmpty(_exportName))
+            {
+                _exportName = SfxPresets.DisplayName(_activePreset);
+            }
 
-            _built = true;
-            SelectPreset(SfxPresetId.Click);
+            _dirty = true;
+            _renderDue = 0d;
+            _waveDirty = true;
+            Repaint();
         }
 
         private void OnDisable()
         {
-            if (_renderItem != null)
-            {
-                _renderItem.Pause();
-                _renderItem = null;
-            }
-
-            if (_watchItem != null)
-            {
-                _watchItem.Pause();
-                _watchItem = null;
-            }
-
             StopPreview();
+
+            if (_preview != null)
+            {
+                _preview.Dispose();
+                _preview = null;
+            }
+
+            if (_params != null)
+            {
+                try
+                {
+                    EditorPrefs.SetString(PrefsKey, SfxLabEngine.Serialize(_params));
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
+            }
         }
 
-        private void WatchPreview()
+        private void OnInspectorUpdate()
         {
-            if (!_playbackActive)
+            if (_playbackActive)
             {
-                if (_watchItem != null)
+                if (_preview == null || !_preview.IsPlaying)
                 {
-                    _watchItem.Pause();
+                    StopPreview();
+                    SetStatus("Ready.", MessageType.Info);
                 }
 
-                return;
+                Repaint();
             }
-
-            if (_preview.IsPlaying)
+            else if (_dirty && EditorApplication.timeSinceStartup >= _renderDue)
             {
-                return;
+                Repaint();
             }
-
-            StopPreview();
-            SetStatus("Ready.", false);
         }
 
-        private static T LoadAsset<T>(string relativePath) where T : Object
+        private void OnGUI()
         {
-            T asset = AssetDatabase.LoadAssetAtPath<T>("Packages/com.afct.sfxlab/" + relativePath);
-            if (asset != null)
+            if (_params == null)
             {
-                return asset;
+                _params = SfxPresets.Create(_activePreset);
+                _dirty = true;
+                _renderDue = 0d;
             }
 
-            string fileName = relativePath.Substring(relativePath.LastIndexOf('/') + 1);
-            string kind = typeof(T) == typeof(StyleSheet) ? "StyleSheet" : "VisualTreeAsset";
-            string[] guids = AssetDatabase.FindAssets(fileName + " t:" + kind);
+            HandleKeyboard();
 
-            for (int i = 0; i < guids.Length; i++)
+            if (_dirty && !_rendering && EditorApplication.timeSinceStartup >= _renderDue)
             {
-                string path = AssetDatabase.GUIDToAssetPath(guids[i]);
-                if (path.EndsWith(fileName, StringComparison.OrdinalIgnoreCase))
+                RenderCurrent();
+            }
+
+            DrawToolbar();
+            GUILayout.Space(2f);
+            DrawBody();
+
+            if (Event.current.type == EventType.MouseMove)
+            {
+                Repaint();
+            }
+        }
+
+        private void DrawToolbar()
+        {
+            GUILayout.BeginHorizontal(EditorStyles.toolbar);
+
+            int presetIndex = Array.IndexOf(SfxPresets.Order, _activePreset);
+            if (presetIndex < 0)
+            {
+                presetIndex = 0;
+            }
+
+            int nextPreset = EditorGUILayout.Popup(presetIndex, PresetLabels, EditorStyles.toolbarPopup, GUILayout.Width(170f));
+            if (nextPreset != presetIndex && nextPreset >= 0 && nextPreset < SfxPresets.Order.Length)
+            {
+                SelectPreset(SfxPresets.Order[nextPreset]);
+            }
+
+            _search = GUILayout.TextField(_search ?? string.Empty, EditorStyles.toolbarSearchField, GUILayout.Width(160f));
+
+            using (new EditorGUI.DisabledScope(_rendering || _samples == null || _samples.Length == 0))
+            {
+                GUIContent playIcon = EditorGUIUtility.IconContent("PlayButton");
+                playIcon.tooltip = "Play the rendered sound (Space)";
+                if (GUILayout.Button(playIcon, EditorStyles.toolbarButton, GUILayout.Width(30f)))
                 {
-                    asset = AssetDatabase.LoadAssetAtPath<T>(path);
-                    if (asset != null)
+                    PlayPreview();
+                }
+            }
+
+            using (new EditorGUI.DisabledScope(!_playbackActive))
+            {
+                GUIContent stopIcon = EditorGUIUtility.IconContent("StopButton");
+                stopIcon.tooltip = "Stop playback";
+                if (GUILayout.Button(stopIcon, EditorStyles.toolbarButton, GUILayout.Width(30f)))
+                {
+                    StopPreview();
+                    SetStatus("Ready.", MessageType.Info);
+                }
+            }
+
+            using (new EditorGUI.DisabledScope(_rendering || _samples == null || _samples.Length == 0))
+            {
+                if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(64f)))
+                {
+                    ExportCurrent();
+                }
+            }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("Sample rate", EditorStyles.miniLabel);
+
+            int rateIndex = Array.IndexOf(SampleRates, _sampleRate);
+            if (rateIndex < 0)
+            {
+                rateIndex = 0;
+            }
+
+            int nextRate = EditorGUILayout.Popup(rateIndex, SampleRateLabels, EditorStyles.toolbarPopup, GUILayout.Width(92f));
+            if (nextRate != rateIndex)
+            {
+                _sampleRate = SampleRates[nextRate];
+                MarkDirty();
+            }
+
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawBody()
+        {
+            float available = position.width - MinRightWidth - SplitterWidth - 24f;
+            float maxLeft = Mathf.Max(MinLeftWidth, Mathf.Min(MaxLeftWidth, available));
+            _leftWidth = Mathf.Clamp(_leftWidth, MinLeftWidth, maxLeft);
+
+            GUILayout.BeginHorizontal(GUILayout.ExpandHeight(true));
+            DrawRail();
+            DrawSplitter(maxLeft);
+            DrawInspector();
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawRail()
+        {
+            GUILayout.BeginVertical(GUILayout.Width(_leftWidth), GUILayout.ExpandHeight(true));
+            _railScroll = GUILayout.BeginScrollView(_railScroll);
+
+            string search = (_search ?? string.Empty).Trim();
+
+            for (int categoryIndex = 0; categoryIndex < RailCategories.Length; categoryIndex++)
+            {
+                string category = RailCategories[categoryIndex];
+                int count = CountPresets(category, search);
+                if (count == 0)
+                {
+                    continue;
+                }
+
+                GUIContent header = new GUIContent(category + "  (" + count.ToString(CultureInfo.InvariantCulture) + ")");
+                Rect headerRect = GUILayoutUtility.GetRect(header, EditorStyles.foldoutHeader, GUILayout.ExpandWidth(true));
+                _categoryOpen[categoryIndex] = EditorGUI.Foldout(headerRect, _categoryOpen[categoryIndex], header, true, EditorStyles.foldoutHeader);
+
+                if (_categoryOpen[categoryIndex])
+                {
+                    for (int i = 0; i < SfxPresets.Order.Length; i++)
                     {
-                        return asset;
+                        SfxPresetId preset = SfxPresets.Order[i];
+                        if (!string.Equals(PresetCategories[i], category, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if (search.Length > 0 && PresetLabels[i].IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            continue;
+                        }
+
+                        DrawRailRow(preset, PresetLabels[i]);
                     }
                 }
+
+                GUILayout.Space(4f);
             }
 
-            return null;
+            GUILayout.EndScrollView();
+            GUILayout.EndVertical();
         }
 
-        private static Font LoadMonoFont()
+        private void DrawRailRow(SfxPresetId preset, string label)
         {
-            Font bundled = EditorGUIUtility.Load("Fonts/RobotoMono/RobotoMono-Regular.ttf") as Font;
-            if (bundled != null)
+            bool selected = preset == _activePreset;
+            Rect row = GUILayoutUtility.GetRect(0f, 18f, GUILayout.ExpandWidth(true));
+            Event current = Event.current;
+
+            if (current.type == EventType.Repaint)
             {
-                return bundled;
-            }
-
-            return Font.CreateDynamicFontFromOSFont(
-                new[] { "SF Mono", "Menlo", "Consolas", "monospace" },
-                11);
-        }
-
-        private void CacheElements()
-        {
-            _exportFolder = rootVisualElement.Q<Label>("export-folder");
-            _railScroll = rootVisualElement.Q<ScrollView>("rail-scroll");
-            _rail = rootVisualElement.Q<VisualElement>("rail");
-            _paramScroll = rootVisualElement.Q<ScrollView>("param-scroll");
-            _presetName = rootVisualElement.Q<Label>("preset-name");
-            _presetLine = rootVisualElement.Q<Label>("preset-line");
-            _paramGroups = rootVisualElement.Q<VisualElement>("param-groups");
-            _monitorMeta = rootVisualElement.Q<Label>("monitor-meta");
-            _waveformSlot = rootVisualElement.Q<VisualElement>("waveform-slot");
-            _readoutDuration = rootVisualElement.Q<Label>("readout-duration");
-            _readoutSamples = rootVisualElement.Q<Label>("readout-samples");
-            _readoutPeak = rootVisualElement.Q<Label>("readout-peak");
-            _readoutClipped = rootVisualElement.Q<Label>("readout-clipped");
-            _playButton = rootVisualElement.Q<Button>("play-button");
-            _stopButton = rootVisualElement.Q<Button>("stop-button");
-            _exportButton = rootVisualElement.Q<Button>("export-button");
-            _status = rootVisualElement.Q<Label>("status");
-
-            if (_railScroll != null)
-            {
-                _railScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-            }
-
-            if (_paramScroll != null)
-            {
-                _paramScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-            }
-        }
-
-        private void ApplyMonoFonts()
-        {
-            rootVisualElement.Query<Label>(className: "mono").ForEach(StyleMono);
-        }
-
-        private void StyleMono(Label label)
-        {
-            if (label == null || _monoFont == null)
-            {
-                return;
-            }
-
-            label.style.unityFontDefinition = new StyleFontDefinition(FontDefinition.FromFont(_monoFont));
-        }
-
-        private void BindControls()
-        {
-            var sampleRateSlot = rootVisualElement.Q<VisualElement>("sample-rate-slot");
-            _sampleRateSelect = new PaperSelect(SampleRateLabels, 0) { name = "sample-rate" };
-            _sampleRateSelect.Changed += OnSampleRateChanged;
-            if (sampleRateSlot != null)
-            {
-                sampleRateSlot.Add(_sampleRateSelect);
-            }
-
-            var trimSlot = rootVisualElement.Q<VisualElement>("trim-slot");
-            _trimCheck = new PaperCheck(string.Empty, false) { name = "trim-silence" };
-            if (trimSlot != null)
-            {
-                trimSlot.Add(_trimCheck);
-            }
-
-            var peakSlot = rootVisualElement.Q<VisualElement>("peak-slot");
-            _peakSelect = new PaperSelect(PeakLabels, 0) { name = "peak-target" };
-            if (peakSlot != null)
-            {
-                peakSlot.Add(_peakSelect);
-            }
-
-            _fileNameField = rootVisualElement.Q<TextField>("file-name");
-            if (_fileNameField != null)
-            {
-                _fileNameField.value = SfxPresets.DisplayName(_activePreset);
-            }
-
-            _waveform = new WaveformView();
-            if (_waveformSlot != null)
-            {
-                _waveformSlot.Add(_waveform);
-            }
-
-            if (_playButton != null)
-            {
-                _playButton.clicked += OnPlayClicked;
-            }
-
-            if (_stopButton != null)
-            {
-                _stopButton.clicked += OnStopClicked;
-            }
-
-            if (_exportButton != null)
-            {
-                _exportButton.clicked += OnExportClicked;
-            }
-
-            UpdateTransportState();
-        }
-
-        private void BuildRail()
-        {
-            if (_rail == null)
-            {
-                return;
-            }
-
-            _rail.Clear();
-            _cueRows.Clear();
-
-            for (int c = 0; c < RailCategories.Length; c++)
-            {
-                string category = RailCategories[c];
-                var section = new VisualElement();
-                section.AddToClassList("rail-section");
-
-                var head = new VisualElement();
-                head.AddToClassList("rail-head");
-
-                var title = new Label(category);
-                title.AddToClassList("rail-head__title");
-
-                var count = new Label("0");
-                count.AddToClassList("rail-head__count");
-                StyleMono(count);
-
-                head.Add(title);
-                head.Add(count);
-                section.Add(head);
-
-                var rows = new VisualElement();
-                section.Add(rows);
-
-                int index = 0;
-                SfxPresetId[] order = SfxPresets.Order;
-                for (int i = 0; i < order.Length; i++)
+                if (selected)
                 {
-                    SfxPresetId preset = order[i];
-                    if (!string.Equals(SfxPresets.Category(preset), category, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    index++;
-                    SfxPresetId captured = preset;
-
-                    var row = new VisualElement();
-                    row.AddToClassList("cue-row");
-                    row.RegisterCallback<ClickEvent>(_ => SelectPreset(captured));
-
-                    var label = new Label(SfxPresets.DisplayName(preset));
-                    label.AddToClassList("cue-row__label");
-
-                    var number = new Label(index.ToString("00", CultureInfo.InvariantCulture));
-                    number.AddToClassList("cue-row__index");
-                    StyleMono(number);
-
-                    row.Add(label);
-                    row.Add(number);
-                    rows.Add(row);
-                    _cueRows[preset] = row;
+                    EditorGUI.DrawRect(row, SfxLabSkin.RailSelection);
+                }
+                else if (row.Contains(current.mousePosition))
+                {
+                    EditorGUI.DrawRect(row, SfxLabSkin.RailHover);
                 }
 
-                count.text = index.ToString(CultureInfo.InvariantCulture);
-                _rail.Add(section);
+                GUIStyle style = selected ? SfxLabSkin.RailRowSelected : SfxLabSkin.RailRow;
+                style.Draw(row, new GUIContent(label), false, false, false, false);
+            }
+
+            if (current.type == EventType.MouseDown && current.button == 0 && row.Contains(current.mousePosition))
+            {
+                SelectPreset(preset);
+                current.Use();
+            }
+        }
+
+        private void DrawSplitter(float maxLeft)
+        {
+            Rect splitter = GUILayoutUtility.GetRect(SplitterWidth, SplitterWidth, GUILayout.Width(SplitterWidth), GUILayout.ExpandHeight(true));
+            EditorGUIUtility.AddCursorRect(splitter, MouseCursor.ResizeHorizontal);
+
+            Event current = Event.current;
+
+            if (current.type == EventType.Repaint)
+            {
+                EditorGUI.DrawRect(splitter, SfxLabSkin.Splitter);
+                EditorGUI.DrawRect(new Rect(splitter.x + 2f, splitter.y, 1f, splitter.height), SfxLabSkin.SplitterLine);
+            }
+            else if (current.type == EventType.MouseDown && current.button == 0 && splitter.Contains(current.mousePosition))
+            {
+                _splitterDrag = true;
+                current.Use();
+            }
+            else if (current.type == EventType.MouseDrag && _splitterDrag)
+            {
+                _leftWidth = Mathf.Clamp(current.mousePosition.x, MinLeftWidth, maxLeft);
+                current.Use();
+                Repaint();
+            }
+            else if (current.type == EventType.MouseUp && _splitterDrag)
+            {
+                _splitterDrag = false;
+                current.Use();
+            }
+        }
+
+        private void DrawInspector()
+        {
+            GUILayout.BeginVertical(GUILayout.MinWidth(MinRightWidth), GUILayout.ExpandWidth(true));
+            _inspectorScroll = EditorGUILayout.BeginScrollView(
+                _inspectorScroll,
+                false,
+                false,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUIStyle.none,
+                GUILayout.ExpandWidth(true),
+                GUILayout.ExpandHeight(true));
+
+            GUILayout.Label(SfxPresets.DisplayName(_activePreset), SfxLabSkin.PresetTitle);
+            GUILayout.Label(BuildPresetLine(), SfxLabSkin.PresetLine);
+            GUILayout.Space(6f);
+
+            DrawEnginePopup();
+            DrawParameterGroups();
+            GUILayout.Space(10f);
+            DrawWaveform();
+            GUILayout.Space(6f);
+            DrawReadouts();
+            GUILayout.Space(4f);
+            EditorGUILayout.HelpBox(_status, _statusType);
+            GUILayout.Space(10f);
+            DrawExportBlock();
+
+            EditorGUILayout.EndScrollView();
+            GUILayout.EndVertical();
+        }
+
+        private void DrawEnginePopup()
+        {
+            if (_params.engine == SfxEngine.Sfxr)
+            {
+                int waveformIndex = Array.IndexOf(Waveforms, _params.waveform);
+                if (waveformIndex < 0)
+                {
+                    waveformIndex = 0;
+                }
+
+                int nextWaveform = EditorGUILayout.Popup("Waveform", waveformIndex, WaveformLabels);
+                if (nextWaveform != waveformIndex && nextWaveform >= 0)
+                {
+                    _params.waveform = Waveforms[nextWaveform];
+                    MarkDirty();
+                }
+            }
+            else
+            {
+                int terrainIndex = Array.IndexOf(Terrains, _params.footstepTerrain);
+                if (terrainIndex < 0)
+                {
+                    terrainIndex = 0;
+                }
+
+                int nextTerrain = EditorGUILayout.Popup("Terrain", terrainIndex, TerrainLabels);
+                if (nextTerrain != terrainIndex && nextTerrain >= 0)
+                {
+                    _params.footstepTerrain = Terrains[nextTerrain];
+                    MarkDirty();
+                }
+            }
+        }
+
+        private void DrawParameterGroups()
+        {
+            for (int groupIndex = 0; groupIndex < Groups.Length; groupIndex++)
+            {
+                GroupSpec group = Groups[groupIndex];
+                _groupOpen[groupIndex] = EditorGUILayout.Foldout(_groupOpen[groupIndex], group.Title, true);
+                if (!_groupOpen[groupIndex])
+                {
+                    continue;
+                }
+
+                EditorGUI.indentLevel++;
+                for (int i = 0; i < group.Parameters.Length; i++)
+                {
+                    DrawParameter(group.Parameters[i]);
+                }
+
+                EditorGUI.indentLevel--;
+                GUILayout.Space(2f);
+            }
+        }
+
+        private void DrawParameter(ParameterSpec parameter)
+        {
+            double value = parameter.Get(_params);
+            EditorGUI.BeginChangeCheck();
+            float next = EditorGUILayout.Slider(parameter.Label, (float)value, parameter.Min, parameter.Max);
+            if (EditorGUI.EndChangeCheck())
+            {
+                parameter.Set(_params, next);
+                MarkDirty();
+            }
+        }
+
+        private void DrawWaveform()
+        {
+            Rect rect = GUILayoutUtility.GetRect(0f, 88f, GUILayout.ExpandWidth(true));
+            if (Event.current.type != EventType.Repaint)
+            {
+                return;
+            }
+
+            EditorGUI.DrawRect(rect, SfxLabSkin.WaveBackground);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, 1f), SfxLabSkin.WaveBorder);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - 1f, rect.width, 1f), SfxLabSkin.WaveBorder);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, 1f, rect.height), SfxLabSkin.WaveBorder);
+            EditorGUI.DrawRect(new Rect(rect.xMax - 1f, rect.y, 1f, rect.height), SfxLabSkin.WaveBorder);
+
+            float middle = rect.y + rect.height * 0.5f;
+            EditorGUI.DrawRect(new Rect(rect.x + 1f, middle, Mathf.Max(0f, rect.width - 2f), 1f), SfxLabSkin.WaveCentre);
+
+            if (_samples == null || _samples.Length == 0)
+            {
+                GUI.Label(rect, "No audio", SfxLabSkin.WaveEmpty);
+                return;
+            }
+
+            int width = Mathf.Max(1, Mathf.RoundToInt(rect.width) - 2);
+            EnsureWaveCache(width);
+
+            float half = Mathf.Max(1f, (rect.height - 8f) * 0.5f);
+            Color column = SfxLabSkin.WaveColumn;
+
+            for (int x = 0; x < _waveWidth; x++)
+            {
+                float min = _waveMin[x];
+                float max = _waveMax[x];
+                float top = middle - max * half;
+                float bottom = middle - min * half;
+                float height = Mathf.Max(1f, bottom - top);
+                EditorGUI.DrawRect(new Rect(rect.x + 1f + x, top, 1f, height), column);
+            }
+        }
+
+        private void EnsureWaveCache(int width)
+        {
+            if (!_waveDirty && _waveWidth == width && _waveMin != null && _waveMax != null)
+            {
+                return;
+            }
+
+            _waveWidth = width;
+            _waveDirty = false;
+
+            if (_waveMin == null || _waveMin.Length != width)
+            {
+                _waveMin = new float[width];
+                _waveMax = new float[width];
+            }
+
+            for (int x = 0; x < width; x++)
+            {
+                _waveMin[x] = 0f;
+                _waveMax[x] = 0f;
+            }
+
+            if (_samples == null || _samples.Length == 0)
+            {
+                return;
+            }
+
+            float peak = _stats != null ? (float)_stats.Peak : 0f;
+            if (peak <= 0.0001f)
+            {
+                peak = 0.0001f;
+            }
+
+            int sampleCount = _samples.Length;
+            for (int x = 0; x < width; x++)
+            {
+                int start = (int)((long)x * sampleCount / width);
+                int end = (int)((long)(x + 1) * sampleCount / width);
+                if (end <= start)
+                {
+                    end = Mathf.Min(sampleCount, start + 1);
+                }
+
+                float min = _samples[start];
+                float max = _samples[start];
+                for (int i = start; i < end; i++)
+                {
+                    float sample = _samples[i];
+                    if (sample < min)
+                    {
+                        min = sample;
+                    }
+
+                    if (sample > max)
+                    {
+                        max = sample;
+                    }
+                }
+
+                _waveMin[x] = Mathf.Clamp(min / peak, -1f, 1f);
+                _waveMax[x] = Mathf.Clamp(max / peak, -1f, 1f);
+            }
+        }
+
+        private void DrawReadouts()
+        {
+            EditorGUILayout.BeginHorizontal();
+            DrawReadout("Duration", _stats != null ? _stats.DurationSeconds.ToString("0.00", CultureInfo.InvariantCulture) + " s" : "0.00 s");
+            DrawReadout("Samples", _stats != null ? _stats.Samples.ToString("N0", CultureInfo.InvariantCulture) : "0");
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+            DrawReadout("Peak", _stats != null ? _stats.Peak.ToString("0.00", CultureInfo.InvariantCulture) : "0.00");
+            DrawReadout("Clipped", _stats != null ? _stats.ClippedSamples.ToString("N0", CultureInfo.InvariantCulture) : "0");
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawReadout(string label, string value)
+        {
+            EditorGUILayout.BeginVertical(GUILayout.MinWidth(120f));
+            GUILayout.Label(label, SfxLabSkin.ReadoutLabel);
+            GUILayout.Label(value, SfxLabSkin.ReadoutValue);
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawExportBlock()
+        {
+            EditorGUILayout.LabelField("Export", EditorStyles.boldLabel);
+            GUILayout.Label("Writes a 16-bit WAV into the project.", EditorStyles.miniLabel);
+            GUILayout.Space(2f);
+
+            _exportName = EditorGUILayout.TextField("File name", _exportName ?? string.Empty);
+            _trimSilence = EditorGUILayout.Toggle("Trim silence", _trimSilence);
+            _peakTarget = (PeakTarget)EditorGUILayout.EnumPopup("Peak target", _peakTarget);
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.PrefixLabel("Folder");
+            if (GUILayout.Button(WavExport.ExportFolder(_activePreset) + "/", SfxLabSkin.FolderField, GUILayout.Height(EditorGUIUtility.singleLineHeight)))
+            {
+                RevealExportFolder();
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            GUILayout.Space(4f);
+            using (new EditorGUI.DisabledScope(_rendering || _samples == null || _samples.Length == 0 || string.IsNullOrEmpty(_exportName)))
+            {
+                if (GUILayout.Button("Export", GUILayout.Height(24f)))
+                {
+                    ExportCurrent();
+                }
+            }
+        }
+
+        private void HandleKeyboard()
+        {
+            Event current = Event.current;
+            if (current.type != EventType.KeyDown || GUIUtility.keyboardControl != 0)
+            {
+                return;
+            }
+
+            if (current.keyCode == KeyCode.Space)
+            {
+                PlayPreview();
+                current.Use();
+            }
+            else if (current.keyCode == KeyCode.R)
+            {
+                SelectPreset(SfxPresetId.Random);
+                current.Use();
             }
         }
 
         private void SelectPreset(SfxPresetId preset)
         {
-            if (!_built)
-            {
-                return;
-            }
-
-            if (_cueRows.TryGetValue(_activePreset, out VisualElement previous) && previous != null)
-            {
-                previous.RemoveFromClassList("is-active");
-            }
-
             _activePreset = preset;
-            if (_cueRows.TryGetValue(preset, out VisualElement current) && current != null)
-            {
-                current.AddToClassList("is-active");
-            }
-
             _params = SfxPresets.Create(preset);
-
-            if (_presetName != null)
-            {
-                _presetName.text = SfxPresets.DisplayName(preset);
-            }
-
-            if (_presetLine != null)
-            {
-                _presetLine.text = BuildPresetLine();
-            }
-
-            if (_exportFolder != null)
-            {
-                _exportFolder.text = WavExport.ExportFolder(preset) + "/";
-            }
-
-            if (_fileNameField != null)
-            {
-                _fileNameField.SetValueWithoutNotify(SfxPresets.DisplayName(preset));
-            }
-
-            BuildParameterGroups();
-
+            _exportName = SfxPresets.DisplayName(preset);
+            _waveDirty = true;
             _dirty = true;
+            _renderDue = 0d;
+            StopPreview();
             RenderCurrent();
+            Repaint();
         }
 
-        private string BuildPresetLine()
-        {
-            string category = SfxPresets.Category(_activePreset);
-
-            if (_params != null && _params.engine == SfxEngine.Footsteppr)
-            {
-                return category + " preset, footsteppr engine, " + TerrainLabel(_params.footstepTerrain) + " terrain.";
-            }
-
-            string waveform = _params != null ? WaveformLabel(_params.waveform) : "waveform";
-            return category + " preset, sfxr engine, " + waveform + ".";
-        }
-
-        private void BuildParameterGroups()
-        {
-            if (_paramGroups == null)
-            {
-                return;
-            }
-
-            _paramGroups.Clear();
-
-            VisualElement envelope = CreateSection(
-                "Envelope",
-                "Attack, sustain and decay over the life of the sound.",
-                true);
-            AddParamRow(envelope, "Attack", p => p.attack, (p, v) => p.attack = v, 0d, 1d, false);
-            AddParamRow(envelope, "Sustain", p => p.sustain, (p, v) => p.sustain = v, 0d, 1d, false);
-            AddParamRow(envelope, "Sustain punch", p => p.sustainPunch, (p, v) => p.sustainPunch = v, 0d, 1d, false);
-            AddParamRow(envelope, "Decay", p => p.decay, (p, v) => p.decay = v, 0d, 1d, false);
-
-            VisualElement frequency = CreateSection(
-                "Frequency",
-                "Pitch floor and the glide from the start tone.",
-                true);
-            AddParamRow(frequency, "Start frequency", p => p.startFrequency, (p, v) => p.startFrequency = v, 0d, 1d, false);
-            AddParamRow(frequency, "Min frequency", p => p.minFrequency, (p, v) => p.minFrequency = v, 0d, 1d, false);
-            AddParamRow(frequency, "Slide", p => p.slide, (p, v) => p.slide = v, -1d, 1d, true);
-            AddParamRow(frequency, "Delta slide", p => p.deltaSlide, (p, v) => p.deltaSlide = v, -1d, 1d, true);
-
-            VisualElement modulation = CreateSection(
-                "Modulation",
-                "Vibrato and repeating pitch changes.",
-                false);
-            AddParamRow(modulation, "Vibrato depth", p => p.vibratoDepth, (p, v) => p.vibratoDepth = v, 0d, 1d, false);
-            AddParamRow(modulation, "Vibrato speed", p => p.vibratoSpeed, (p, v) => p.vibratoSpeed = v, 0d, 1d, false);
-            AddParamRow(modulation, "Change amount", p => p.changeAmount, (p, v) => p.changeAmount = v, -1d, 1d, true);
-            AddParamRow(modulation, "Change speed", p => p.changeSpeed, (p, v) => p.changeSpeed = v, 0d, 1d, false);
-
-            VisualElement texture = CreateSection(
-                "Texture",
-                "Wave shape, duty cycle and phaser movement.",
-                false);
-            AddParamRow(texture, "Square duty", p => p.squareDuty, (p, v) => p.squareDuty = v, 0d, 1d, false);
-            AddParamRow(texture, "Duty sweep", p => p.dutySweep, (p, v) => p.dutySweep = v, -1d, 1d, true);
-            AddParamRow(texture, "Repeat speed", p => p.repeatSpeed, (p, v) => p.repeatSpeed = v, 0d, 1d, false);
-            AddParamRow(texture, "Phaser offset", p => p.phaserOffset, (p, v) => p.phaserOffset = v, -1d, 1d, true);
-            AddParamRow(texture, "Phaser sweep", p => p.phaserSweep, (p, v) => p.phaserSweep = v, -1d, 1d, true);
-
-            VisualElement filter = CreateSection(
-                "Filter",
-                "Low and high pass shaping plus master level.",
-                false);
-            AddParamRow(filter, "Low pass cutoff", p => p.lowPassCutoff, (p, v) => p.lowPassCutoff = v, 0d, 1d, false);
-            AddParamRow(filter, "Low pass sweep", p => p.lowPassSweep, (p, v) => p.lowPassSweep = v, -1d, 1d, true);
-            AddParamRow(filter, "Low pass resonance", p => p.lowPassResonance, (p, v) => p.lowPassResonance = v, 0d, 1d, false);
-            AddParamRow(filter, "High pass cutoff", p => p.highPassCutoff, (p, v) => p.highPassCutoff = v, 0d, 1d, false);
-            AddParamRow(filter, "High pass sweep", p => p.highPassSweep, (p, v) => p.highPassSweep = v, -1d, 1d, true);
-            AddParamRow(filter, "Master volume", p => p.masterVolume, (p, v) => p.masterVolume = v, 0d, 1d, false);
-
-            VisualElement fx = CreateSection(
-                "FX rack",
-                "Drive, crush, tone, delay and space.",
-                false);
-            AddParamRow(fx, "Drive", p => p.fxDrive, (p, v) => p.fxDrive = v, 0d, 1d, false);
-            AddParamRow(fx, "Crush rate", p => p.fxCrushRate, (p, v) => p.fxCrushRate = v, 0d, 1d, false);
-            AddParamRow(fx, "Crush bits", p => p.fxCrushBits, (p, v) => p.fxCrushBits = v, 0d, 1d, false);
-            AddParamRow(fx, "Tone", p => p.fxTone, (p, v) => p.fxTone = v, -1d, 1d, true);
-            AddParamRow(fx, "Delay time", p => p.fxDelayTime, (p, v) => p.fxDelayTime = v, 0d, 1d, false);
-            AddParamRow(fx, "Delay feedback", p => p.fxDelayFeedback, (p, v) => p.fxDelayFeedback = v, 0d, 1d, false);
-            AddParamRow(fx, "Delay mix", p => p.fxDelayMix, (p, v) => p.fxDelayMix = v, 0d, 1d, false);
-            AddParamRow(fx, "Reverb size", p => p.fxReverbSize, (p, v) => p.fxReverbSize = v, 0d, 1d, false);
-            AddParamRow(fx, "Reverb mix", p => p.fxReverbMix, (p, v) => p.fxReverbMix = v, 0d, 1d, false);
-        }
-
-        private VisualElement CreateSection(string title, string detail, bool expanded)
-        {
-            var section = new VisualElement();
-            section.AddToClassList("section");
-
-            var head = new VisualElement();
-            head.AddToClassList("section-head");
-
-            var titleLabel = new Label(title);
-            titleLabel.AddToClassList("section-head__title");
-
-            var detailLabel = new Label(detail);
-            detailLabel.AddToClassList("section-head__detail");
-
-            bool open = expanded;
-            var state = new Label(open ? "-" : "+");
-            state.AddToClassList("section-head__state");
-            StyleMono(state);
-
-            var body = new VisualElement();
-            body.AddToClassList("section-body");
-            body.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
-
-            head.RegisterCallback<ClickEvent>(_ =>
-            {
-                open = !open;
-                body.style.display = open ? DisplayStyle.Flex : DisplayStyle.None;
-                state.text = open ? "-" : "+";
-            });
-
-            head.Add(titleLabel);
-            head.Add(detailLabel);
-            head.Add(state);
-            section.Add(head);
-            section.Add(body);
-            _paramGroups.Add(section);
-
-            return body;
-        }
-
-        private void AddParamRow(
-            VisualElement parent,
-            string label,
-            Func<SfxParams, double> getter,
-            Action<SfxParams, double> setter,
-            double min,
-            double max,
-            bool signed)
+        private void RenderCurrent()
         {
             if (_params == null)
             {
                 return;
             }
 
-            var row = new VisualElement();
-            row.AddToClassList("param-row");
-
-            var name = new Label(label);
-            name.AddToClassList("param-row__label");
-
-            var value = new Label(FormatValue(getter(_params), signed));
-            value.AddToClassList("param-row__value");
-            StyleMono(value);
-
-            var slider = new RangeSlider(min, max, getter(_params));
-            slider.ValueChanged += v =>
-            {
-                setter(_params, v);
-                value.text = FormatValue(v, signed);
-                _dirty = true;
-                ScheduleRender();
-            };
-
-            row.Add(name);
-            row.Add(slider);
-            row.Add(value);
-            parent.Add(row);
-        }
-
-        private static string FormatValue(double value, bool signed)
-        {
-            double percent = Math.Round(value * 100d);
-            if (percent == 0d)
-            {
-                percent = 0d;
-            }
-
-            string text = percent.ToString("0", CultureInfo.InvariantCulture);
-            if (signed && percent > 0d)
-            {
-                text = "+" + text;
-            }
-
-            return text + "%";
-        }
-
-        private void ScheduleRender()
-        {
-            if (!_built)
-            {
-                return;
-            }
-
-            if (_renderItem == null)
-            {
-                _renderItem = rootVisualElement.schedule.Execute(RenderCurrent);
-            }
-
-            if (!_renderItem.isActive)
-            {
-                _renderItem.Resume();
-            }
-
-            _renderItem.ExecuteLater(RenderDelayMs);
-        }
-
-        private void RenderCurrent()
-        {
-            if (!_built || !_dirty)
-            {
-                return;
-            }
-
             _dirty = false;
+
+            if (_rendering)
+            {
+                return;
+            }
+
             _rendering = true;
-
-            if (_playbackActive)
-            {
-                StopPreview();
-            }
-
-            if (_playButton != null)
-            {
-                _playButton.SetEnabled(false);
-            }
-
-            if (_exportButton != null)
-            {
-                _exportButton.SetEnabled(false);
-            }
-
-            SetStatus("Rendering...", false);
+            StopPreview();
+            SetStatus("Rendering...", MessageType.Info);
 
             try
             {
-                var options = new SfxRenderOptions { SampleRate = _sampleRate, BitDepth = 16 };
-                SfxRenderResult result = SfxLabEngine.Render(_params, options);
+                SfxRenderOptions options = new SfxRenderOptions
+                {
+                    SampleRate = _sampleRate,
+                    BitDepth = 16
+                };
 
+                SfxRenderResult result = SfxLabEngine.Render(_params, options);
                 _samples = result.Samples;
                 _stats = result.Stats;
-
-                if (_waveform != null)
-                {
-                    _waveform.SetSamples(_samples);
-                }
-
-                UpdateReadouts();
-                UpdateMonitorMeta();
-                SetStatus("Ready.", false);
+                _waveDirty = true;
+                SetStatus("Ready.", MessageType.Info);
             }
             catch (Exception exception)
             {
                 _samples = null;
                 _stats = null;
-
-                if (_waveform != null)
-                {
-                    _waveform.SetSamples(null);
-                }
-
-                UpdateReadouts();
-                SetStatus("Render failed: " + exception.Message, false);
+                _waveDirty = true;
+                SetStatus("Render failed: " + exception.Message, MessageType.Error);
                 Debug.LogException(exception);
             }
             finally
             {
                 _rendering = false;
-
-                if (_playButton != null)
-                {
-                    _playButton.SetEnabled(true);
-                }
-
-                if (_exportButton != null)
-                {
-                    _exportButton.SetEnabled(true);
-                }
-
-                UpdateTransportState();
+                Repaint();
             }
         }
 
-        private void UpdateReadouts()
-        {
-            if (_readoutDuration != null)
-            {
-                _readoutDuration.text = _stats != null
-                    ? _stats.DurationSeconds.ToString("0.00", CultureInfo.InvariantCulture) + " s"
-                    : "0.00 s";
-            }
-
-            if (_readoutSamples != null)
-            {
-                _readoutSamples.text = _stats != null
-                    ? _stats.Samples.ToString("N0", CultureInfo.InvariantCulture)
-                    : "0";
-            }
-
-            if (_readoutPeak != null)
-            {
-                _readoutPeak.text = _stats != null
-                    ? _stats.Peak.ToString("0.00", CultureInfo.InvariantCulture)
-                    : "0.00";
-
-                if (_samples != null && _samples.Length > 0)
-                {
-                    _readoutPeak.tooltip = Mastering.MeasurePeakDb(_samples)
-                        .ToString("0.0", CultureInfo.InvariantCulture) + " dBFS";
-                }
-            }
-
-            if (_readoutClipped != null)
-            {
-                _readoutClipped.text = _stats != null
-                    ? _stats.ClippedSamples.ToString("N0", CultureInfo.InvariantCulture)
-                    : "0";
-            }
-        }
-
-        private void UpdateMonitorMeta()
-        {
-            if (_monitorMeta == null)
-            {
-                return;
-            }
-
-            string source;
-            if (_params != null && _params.engine == SfxEngine.Footsteppr)
-            {
-                source = Capitalize(TerrainLabel(_params.footstepTerrain));
-            }
-            else
-            {
-                source = Capitalize(_params != null ? WaveformLabel(_params.waveform) : "waveform");
-            }
-
-            _monitorMeta.text = source + ", " + RateLabel(_sampleRate) + ", 16 bit";
-        }
-
-        private void UpdateTransportState()
-        {
-            if (_playButton != null)
-            {
-                _playButton.EnableInClassList("is-live", _playbackActive);
-            }
-
-            if (_stopButton != null)
-            {
-                _stopButton.SetEnabled(_playbackActive);
-            }
-        }
-
-        private void OnSampleRateChanged(int index)
-        {
-            if (index < 0 || index >= SampleRates.Length)
-            {
-                return;
-            }
-
-            _sampleRate = SampleRates[index];
-            _dirty = true;
-            ScheduleRender();
-        }
-
-        private void OnPlayClicked()
+        private void PlayPreview()
         {
             if (_rendering)
             {
@@ -782,167 +743,245 @@ namespace AFCT.SfxLab.EditorTools
             }
 
             RenderCurrent();
+
             if (_samples == null || _samples.Length == 0)
             {
+                SetStatus("Preview failed: there is no rendered audio.", MessageType.Warning);
                 return;
             }
 
             StopPreview();
 
-            AudioClip clip = AudioClip.Create(
-                "AFCT SFX Lab Preview",
-                _samples.Length,
-                1,
-                _sampleRate,
-                false);
-            clip.hideFlags = HideFlags.HideAndDontSave;
+            if (_preview == null)
+            {
+                _preview = new AudioPreview();
+            }
 
+            AudioClip clip = AudioClip.Create("AFCT SFX Lab Preview", _samples.Length, 1, _sampleRate, false);
             if (!clip.SetData(_samples, 0))
             {
-                Object.DestroyImmediate(clip);
-                SetStatus("Preview failed: the clip could not be filled.", false);
+                DestroyImmediate(clip);
+                SetStatus("Preview failed: the clip could not be filled.", MessageType.Error);
                 return;
             }
 
+            clip.hideFlags = HideFlags.HideAndDontSave;
             _previewClip = clip;
             _preview.Play(clip);
             _playbackActive = true;
-            UpdateTransportState();
-            SetStatus("Playing.", true);
-
-            if (_watchItem == null)
-            {
-                _watchItem = rootVisualElement.schedule.Execute(WatchPreview).Every(100);
-            }
-
-            if (!_watchItem.isActive)
-            {
-                _watchItem.Resume();
-            }
-        }
-
-        private void OnStopClicked()
-        {
-            StopPreview();
-            SetStatus("Ready.", false);
-        }
-
-        private void OnExportClicked()
-        {
-            if (_rendering)
-            {
-                return;
-            }
-
-            RenderCurrent();
-            if (_samples == null || _samples.Length == 0)
-            {
-                SetStatus("Export failed: there is no rendered audio.", false);
-                return;
-            }
-
-            int peakIndex = _peakSelect != null
-                ? Mathf.Clamp(_peakSelect.Index, 0, PeakValues.Length - 1)
-                : 0;
-
-            try
-            {
-                string assetPath = WavExport.Export(
-                    _activePreset,
-                    _fileNameField != null ? _fileNameField.value : null,
-                    _samples,
-                    _sampleRate,
-                    _trimCheck != null && _trimCheck.Value,
-                    PeakValues[peakIndex]);
-
-                SetStatus("Exported to " + WavExport.ExportFolder(_activePreset) + "/.", false);
-                Debug.Log("AFCT SFX Lab: exported " + assetPath);
-            }
-            catch (Exception exception)
-            {
-                SetStatus("Export failed: " + exception.Message, false);
-                Debug.LogException(exception);
-            }
+            SetStatus("Playing.", MessageType.Info);
+            Repaint();
         }
 
         private void StopPreview()
         {
-            _preview.Stop();
+            if (_preview != null)
+            {
+                _preview.Stop();
+            }
 
             if (_previewClip != null)
             {
-                Object.DestroyImmediate(_previewClip);
+                DestroyImmediate(_previewClip);
                 _previewClip = null;
             }
 
-            _playbackActive = false;
-
-            if (_watchItem != null)
+            if (_playbackActive)
             {
-                _watchItem.Pause();
+                _playbackActive = false;
+                Repaint();
             }
-
-            UpdateTransportState();
         }
 
-        private void SetStatus(string message, bool live)
+        private void ExportCurrent()
         {
-            if (_status == null)
+            if (_rendering)
             {
                 return;
             }
 
-            _status.text = message;
-            _status.tooltip = message;
-            _status.EnableInClassList("is-live", live);
-        }
+            RenderCurrent();
 
-        private static string WaveformLabel(SfxWaveform waveform)
-        {
-            switch (waveform)
+            if (_samples == null || _samples.Length == 0)
             {
-                case SfxWaveform.Square:
-                    return "square wave";
-                case SfxWaveform.Sawtooth:
-                    return "sawtooth wave";
-                case SfxWaveform.Sine:
-                    return "sine wave";
-                default:
-                    return "noise";
+                SetStatus("Export failed: there is no rendered audio.", MessageType.Error);
+                return;
+            }
+
+            try
+            {
+                double targetPeak = PeakValues[(int)_peakTarget];
+                string assetPath = WavExport.Export(_activePreset, _exportName, _samples, _sampleRate, _trimSilence, targetPeak);
+                SetStatus("Exported to " + WavExport.ExportFolder(_activePreset) + "/.", MessageType.Info);
+                Debug.Log("AFCT SFX Lab: exported " + assetPath);
+            }
+            catch (Exception exception)
+            {
+                SetStatus("Export failed: " + exception.Message, MessageType.Error);
+                Debug.LogException(exception);
             }
         }
 
-        private static string TerrainLabel(SfxFootstepTerrain terrain)
+        private void RevealExportFolder()
         {
-            return terrain.ToString().ToLowerInvariant();
-        }
-
-        private static string Capitalize(string value)
-        {
-            if (string.IsNullOrEmpty(value))
+            string relative = WavExport.ExportFolder(_activePreset);
+            string absolute = System.IO.Path.GetFullPath(relative);
+            if (!System.IO.Directory.Exists(absolute))
             {
-                return value;
+                absolute = System.IO.Path.GetFullPath(".");
             }
 
-            if (value.Length == 1)
-            {
-                return value.ToUpperInvariant();
-            }
-
-            return char.ToUpperInvariant(value[0]) + value.Substring(1);
+            EditorUtility.RevealInFinder(absolute);
         }
 
-        private static string RateLabel(int sampleRate)
+        private void MarkDirty()
         {
-            for (int i = 0; i < SampleRates.Length; i++)
+            _dirty = true;
+            _renderDue = EditorApplication.timeSinceStartup + RenderDebounceSeconds;
+            Repaint();
+        }
+
+        private void SetStatus(string message, MessageType type)
+        {
+            _status = message;
+            _statusType = type;
+        }
+
+        private string BuildPresetLine()
+        {
+            string category = SfxPresets.Category(_activePreset);
+            if (_params.engine == SfxEngine.Footsteppr)
             {
-                if (SampleRates[i] == sampleRate)
+                return category + " preset, footsteppr engine, " + TerrainLabels[Array.IndexOf(Terrains, _params.footstepTerrain)].ToLowerInvariant() + " terrain.";
+            }
+
+            return category + " preset, sfxr engine, " + WaveformLabels[Array.IndexOf(Waveforms, _params.waveform)].ToLowerInvariant() + ".";
+        }
+
+        private static int CountPresets(string category, string search)
+        {
+            int count = 0;
+            for (int i = 0; i < SfxPresets.Order.Length; i++)
+            {
+                if (!string.Equals(PresetCategories[i], category, StringComparison.OrdinalIgnoreCase))
                 {
-                    return SampleRateLabels[i];
+                    continue;
                 }
+
+                if (search.Length > 0 && PresetLabels[i].IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                count++;
             }
 
-            return sampleRate.ToString(CultureInfo.InvariantCulture) + " Hz";
+            return count;
+        }
+
+        private static SfxParams LoadSavedParams()
+        {
+            string json = EditorPrefs.GetString(PrefsKey, string.Empty);
+            if (string.IsNullOrEmpty(json))
+            {
+                return null;
+            }
+
+            try
+            {
+                return SfxLabEngine.Clamp(SfxLabEngine.Deserialize(json));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static GroupSpec[] BuildGroups()
+        {
+            return new[]
+            {
+                new GroupSpec("Envelope", true,
+                    Unit("Attack", p => p.attack, (p, v) => p.attack = v),
+                    Unit("Sustain", p => p.sustain, (p, v) => p.sustain = v),
+                    Unit("Sustain punch", p => p.sustainPunch, (p, v) => p.sustainPunch = v),
+                    Unit("Decay", p => p.decay, (p, v) => p.decay = v)),
+                new GroupSpec("Frequency", true,
+                    Unit("Start", p => p.startFrequency, (p, v) => p.startFrequency = v),
+                    Unit("Min", p => p.minFrequency, (p, v) => p.minFrequency = v),
+                    Signed("Slide", p => p.slide, (p, v) => p.slide = v),
+                    Signed("Delta slide", p => p.deltaSlide, (p, v) => p.deltaSlide = v)),
+                new GroupSpec("Modulation", false,
+                    Unit("Vibrato depth", p => p.vibratoDepth, (p, v) => p.vibratoDepth = v),
+                    Unit("Vibrato speed", p => p.vibratoSpeed, (p, v) => p.vibratoSpeed = v),
+                    Signed("Change amount", p => p.changeAmount, (p, v) => p.changeAmount = v),
+                    Unit("Change speed", p => p.changeSpeed, (p, v) => p.changeSpeed = v)),
+                new GroupSpec("Texture", false,
+                    Unit("Square duty", p => p.squareDuty, (p, v) => p.squareDuty = v),
+                    Signed("Duty sweep", p => p.dutySweep, (p, v) => p.dutySweep = v),
+                    Unit("Repeat speed", p => p.repeatSpeed, (p, v) => p.repeatSpeed = v),
+                    Signed("Phaser offset", p => p.phaserOffset, (p, v) => p.phaserOffset = v),
+                    Signed("Phaser sweep", p => p.phaserSweep, (p, v) => p.phaserSweep = v)),
+                new GroupSpec("Filter", false,
+                    Unit("Low pass", p => p.lowPassCutoff, (p, v) => p.lowPassCutoff = v),
+                    Signed("Low pass sweep", p => p.lowPassSweep, (p, v) => p.lowPassSweep = v),
+                    Unit("Low pass resonance", p => p.lowPassResonance, (p, v) => p.lowPassResonance = v),
+                    Unit("High pass", p => p.highPassCutoff, (p, v) => p.highPassCutoff = v),
+                    Signed("High pass sweep", p => p.highPassSweep, (p, v) => p.highPassSweep = v),
+                    Unit("Master volume", p => p.masterVolume, (p, v) => p.masterVolume = v)),
+                new GroupSpec("FX rack", false,
+                    Unit("Drive", p => p.fxDrive, (p, v) => p.fxDrive = v),
+                    Unit("Crush rate", p => p.fxCrushRate, (p, v) => p.fxCrushRate = v),
+                    Unit("Crush bits", p => p.fxCrushBits, (p, v) => p.fxCrushBits = v),
+                    Signed("Tone", p => p.fxTone, (p, v) => p.fxTone = v),
+                    Unit("Delay time", p => p.fxDelayTime, (p, v) => p.fxDelayTime = v),
+                    Unit("Delay feedback", p => p.fxDelayFeedback, (p, v) => p.fxDelayFeedback = v),
+                    Unit("Delay mix", p => p.fxDelayMix, (p, v) => p.fxDelayMix = v),
+                    Unit("Reverb size", p => p.fxReverbSize, (p, v) => p.fxReverbSize = v),
+                    Unit("Reverb mix", p => p.fxReverbMix, (p, v) => p.fxReverbMix = v))
+            };
+        }
+
+        private static ParameterSpec Unit(string label, Func<SfxParams, double> get, Action<SfxParams, double> set)
+        {
+            return new ParameterSpec(label, get, set, 0f, 1f);
+        }
+
+        private static ParameterSpec Signed(string label, Func<SfxParams, double> get, Action<SfxParams, double> set)
+        {
+            return new ParameterSpec(label, get, set, -1f, 1f);
+        }
+
+        private sealed class ParameterSpec
+        {
+            public readonly string Label;
+            public readonly Func<SfxParams, double> Get;
+            public readonly Action<SfxParams, double> Set;
+            public readonly float Min;
+            public readonly float Max;
+
+            public ParameterSpec(string label, Func<SfxParams, double> get, Action<SfxParams, double> set, float min, float max)
+            {
+                Label = label;
+                Get = get;
+                Set = set;
+                Min = min;
+                Max = max;
+            }
+        }
+
+        private sealed class GroupSpec
+        {
+            public readonly string Title;
+            public readonly bool ExpandedByDefault;
+            public readonly ParameterSpec[] Parameters;
+
+            public GroupSpec(string title, bool expandedByDefault, params ParameterSpec[] parameters)
+            {
+                Title = title;
+                ExpandedByDefault = expandedByDefault;
+                Parameters = parameters;
+            }
         }
     }
 }

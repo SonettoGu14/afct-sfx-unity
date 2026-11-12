@@ -1,6 +1,6 @@
 {
   "name": "com.afct.sfxlab",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "AFCT SFX Lab",
   "description": "Generate retro and cinematic game sound effects inside the Unity Editor. 28 presets, a parameter synth with an FX rack, and one-click WAV export into the project.",
   "unity": "2022.3",

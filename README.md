@@ -8,6 +8,9 @@ This is the Unity counterpart of [AFCT SFX Lab for the web](https://sonettogu14.
 Both run the same engine: the sfxr parameter synth, eight footstep terrain models, and a six-stage
 FX rack. Golden fixtures generated from the web engine keep the two implementations in sync.
 
+The window is built with Unity's own IMGUI controls, so it follows the Pro and Light editor skins
+instead of imposing a separate visual style.
+
 ## Install
 
 Package Manager ▸ Add package from git URL:
@@ -30,7 +33,10 @@ Minimum Unity 2022.3. Opens under **Tools ▸ AFCT SFX Lab**.
 - Full parameter control: envelope, frequency, modulation, texture, filter, and a six-stage FX rack
   (drive, bitcrush, tone tilt, echo, space, peak ceiling).
 - Seeded variation, so a sound can be reproduced exactly.
-- Live audition in the Editor without entering Play mode.
+- Editor-native window: a Project-window preset rail, an Inspector-style parameter column, and a
+  draggable splitter between them.
+- Live audition in the Editor without entering Play mode. Space plays the current sound and R picks
+  the random preset.
 - Export to `Assets/Audio/SFX/<category>/` as 16-bit PCM WAV, with the AudioImporter configured for
   game use (mono, preload, PCM for short clips, ADPCM for longer ones).
 
